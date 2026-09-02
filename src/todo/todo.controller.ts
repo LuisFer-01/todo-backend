@@ -1,6 +1,6 @@
-import { Body, Controller, Get, Post, Param, ParseIntPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post } from '@nestjs/common';
 import { CreateTodoDto } from './dto/create-todo.dto';
-import { Todo } from './entities/entities';
+import { UpdateTodoDto } from './dto/update-todo.dto';
 import { TodoService } from './todo.service';
 
 @Controller('todo')
@@ -10,17 +10,30 @@ export class TodoController {
     ) {}
 
     @Get()
-    findAll(): Todo[] {
+    findAll() {
         return this.todoService.getAll();
     }
 
     @Get(':id')
-    findOne(@Param('id', ParseIntPipe) id: number): Todo {
+    findOne(@Param('id', ParseIntPipe) id: number) {
         return this.todoService.getOne(id);
     }
 
     @Post()
-    create(@Body() createTodoDto: CreateTodoDto): Todo {
+    create(@Body() createTodoDto: CreateTodoDto) {
         return this.todoService.create(createTodoDto);
+    }
+
+    @Patch(':id')
+    update(
+        @Param('id', ParseIntPipe) id: number,
+        @Body() updateTodoDto: UpdateTodoDto
+    ) {
+        return this.todoService.update(id, updateTodoDto);
+    }
+
+    @Delete(':id')
+    delete(@Param('id', ParseIntPipe) id: number) {
+        return this.todoService.deleteItem(id);
     }
 }
