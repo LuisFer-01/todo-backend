@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post } from '@nestjs/common';
-import { CreateTodoDto } from './dto/create-todo.dto';
-import { UpdateTodoDto } from './dto/update-todo.dto';
-import { TodoService } from './todo.service';
+import { CreateTodoDto } from '../../contexts/tasks/todo/application/dto/create-todo.dto';
+import { UpdateTodoDto } from '../../contexts/tasks/todo/application/dto/update-todo.dto';
+import { TodoService } from '../../contexts/tasks/todo/application/todo.service';
 
 @Controller('todo')
 export class TodoController {
@@ -11,7 +11,7 @@ export class TodoController {
 
     @Get()
     findAll() {
-        return this.todoService.getAll();
+        return this.todoService.findAll();
     }
 
     @Get(':id')

@@ -2,113 +2,787 @@
   <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
 </p>
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+# Todo Backend — NestJS + Prisma + PostgreSQL (DDD)
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Backend de tareas construido con NestJS, Prisma ORM y PostgreSQL, siguiendo los principios de **Domain-Driven Design (DDD)** con **Hexagonal Architecture**.
 
-## Description
+> Este backend forma parte de un monorepo. El frontend está en `packages/frontend/`.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Requisitos previos
 
-## Project setup
+- Node.js >= 18
+- pnpm
+- PostgreSQL corriendo localmente (o una instancia en la nube)
+
+## Instalación y configuración
 
 ```bash
-$ pnpm install
+# 1. Instalar dependencias
+pnpm install
+
+# 2. Aprobar builds nativos (argon2, esbuild, etc.)
+pnpm approve-builds argon2 esbuild @parcel/watcher @prisma/engines prisma unrs-resolver
+
+# 3. Configurar DATABASE_URL en .env
+cp .env.sample .env
+
+# 4. Generar client de Prisma
+npx prisma generate
+
+# 5. Crear migración inicial
+npx prisma migrate dev --name init
 ```
 
-## Compile and run the project
+### Variables de entorno (`.env`)
+
+```env
+PORT=3050
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/todo?schema=public"
+JWT_SECRET=your_jwt_secret_key
+```
+
+Formato general:
+```
+postgresql://USUARIO:CONTRASEÑA@HOST:PUERTO/NOMBRE_DB?schema=public
+```
+
+## Paquetes de Prisma
+
+| Paquete | Propósito |
+|---------|-----------|
+| `prisma` | CLI de Prisma para migraciones, generación de client, etc. |
+| `@prisma/client` | Cliente generado para consultar la base de datos |
+| `@prisma/adapter-pg` | Driver adapter para usar `pg` (node-postgres) como transport |
+| `pg` | Driver PostgreSQL puro para Node.js |
+
+> **Nota:** En Prisma 7, el client se importa desde `generated/prisma/client` (no desde `@prisma/client`) por el custom output en el schema.
+
+---
+
+## Evolución de la estructura
+
+Este proyecto evolucionó paso a paso desde una estructura simple hasta DDD. A continuación se muestra cada fase.
+
+### Fase 1: Estructura inicial (NestJS flat)
+
+La estructura original del proyecto era plana, sin separación por capas:
+
+```
+src/
+├── prisma/
+│   ├── prisma.module.ts       # Módulo global de Prisma
+│   └── prisma.service.ts      # Service que extiende PrismaClient
+├── todo/
+│   ├── todo.module.ts
+│   ├── todo.controller.ts
+│   ├── todo.service.ts
+│   └── dto/
+├── app.module.ts              # Módulo raíz
+└── main.ts
+```
+
+**Problema:** Todo vivía en el mismo nivel. No había separación entre dominio, aplicación e infraestructura. Agregar una segunda feature (ej. users) habría crecido la confusión rápidamente.
+
+### Fase 2: Extracción de Prisma a shared infrastructure
+
+El primer paso fue mover `PrismaService` y `PrismaModule` a una capa compartida (`shared/`), sacándolos del módulo de dominio:
+
+```
+src/
+├── shared/
+│   └── infrastructure/
+│       └── prisma/
+│           ├── prisma.module.ts    # @Global — disponible en toda la app
+│           └── prisma.service.ts   # Extiende PrismaClient con driver adapter
+└── todo/                           # (todavía flat en src/)
+```
+
+**Por qué:** Prisma es infraestructura, no pertenece a ninguna feature. Al ser `@Global()`, se inyecta en cualquier módulo sin importarlo explícitamente.
+
+### Fase 3: Creación de bounded contexts (contexts)
+
+Se creó la capa `contexts/` para agrupar **bounded contexts** — dominios de negocio que se comunican entre sí pero son independientes internamente:
+
+```
+src/
+├── contexts/
+│   └── tasks/                    # Bounded context: "Tasks"
+│       └── todo/                 # Aggregate root: Todo
+│           ├── domain/           # Entidad + repositorio abstracto
+│           ├── application/      # Service + DTOs
+│           └── infrastructure/   # Implementación del repositorio
+├── shared/
+│   └── infrastructure/
+│       └── prisma/
+└── apps/                         # Capa de delivery
+```
+
+**Regla clave:** Los bounded contexts NO importan entre sí. Si `tasks/users` necesitara algo de `tasks/todos`, se comunica por eventos o DTOs compartidos — nunca por imports directos.
+
+### Fase 4: Separación por capas DDD (domain / application / infrastructure)
+
+Dentro de cada aggregate root (`todo/`), se separó la lógica en tres capas:
+
+#### Domain (el corazón)
+
+```typescript
+// src/contexts/tasks/todo/domain/todo.entity.ts
+export class Todo {
+  constructor(
+    public readonly id: string,
+    public readonly title: string,
+    public readonly completed: boolean,
+  ) {}
+}
+
+// src/contexts/tasks/todo/domain/todo.repository.ts
+export abstract class TodoRepository {
+  abstract findAll(): Promise<Todo[]>;
+  abstract getOne(id: number): Promise<Todo | null>;
+  abstract create(data: CreateTodoData): Promise<Todo | null>;
+  abstract update(id: number, data: UpdateTodoData): Promise<Todo | null>;
+  abstract deleteItem(id: number): Promise<void>;
+}
+```
+
+- **Entidad:** Representación pura del dominio, sin dependencias de frameworks.
+- **Repositorio abstracto:** Interfaz que define QUÉ se puede hacer con los datos, no CÓMO se almacenan.
+
+#### Application (casos de uso)
+
+```typescript
+// src/contexts/tasks/todo/application/todo.service.ts
+@Injectable()
+export class TodoService {
+  constructor(private readonly todoRepository: TodoRepository) {}
+  // Lógica de negocio: validaciones, transformaciones, orquestación
+}
+```
+
+- Depende del **repositorio abstracto** (domain), NO de Prisma.
+- Los DTOs (`create-todo.dto.ts`, `update-todo.dto.ts`) definen la forma de los datos de entrada.
+
+#### Infrastructure (implementación técnica)
+
+```typescript
+// src/contexts/tasks/todo/infrastructure/prisma-todo.repository.ts
+@Injectable()
+export class PrismaTodoRepository implements TodoRepository {
+  constructor(private readonly prisma: PrismaService) {}
+
+  private toDomain(row: any) {
+    return new Todo(row.id, row.title, row.completed);
+  }
+
+  async findAll() {
+    const rows = await this.prisma.todo.findMany();
+    return rows.map((r) => this.toDomain(r));
+  }
+  // ... CRUD operations
+}
+```
+
+- Implementa el repositorio abstracto usando Prisma.
+- El método `toDomain()` traduce los datos de la DB a la entidad del dominio.
+- Para cambiar de Prisma a TypeORM, se crea otro archivo en `infrastructure/` que implemente la misma interfaz — el service NO cambia.
+
+### Fase 5: Capa de delivery (apps)
+
+Se creó la capa `apps/` para separar la presentación de la lógica de negocio:
+
+```
+src/
+├── apps/
+│   ├── apps.module.ts           # Agrupa las diferentes "apps"
+│   └── api/
+│       ├── api.module.ts        # Importa módulos de contextos
+│       ├── todo.controller.ts   # HTTP endpoints
+│       └── todo.controller.spec.ts
+```
+
+El controller depende del **service** (application layer), nunca del repositorio directamente:
+
+```typescript
+@Controller('todo')
+export class TodoController {
+  constructor(private readonly todoService: TodoService) {}
+  // Los endpoints delegan al service
+}
+```
+
+**Por qué `apps/`:** Permite tener múltiples capas de delivery (HTTP API, CLI, gRPC, etc.) sin mezclar controllers con lógica de negocio.
+
+### Fase 6: Árbol de módulos final
+
+La jerarquía de módulos NestJS ahora es:
+
+```
+AppModule
+├── PrismaModule (@Global)
+├── ContextsModule
+│   └── TasksModule
+│       └── TodoModule
+└── AppsModule
+    └── ApiModule
+        └── TodoController
+```
+
+**Flujo de inyección:**
+1. `PrismaModule` exporta `PrismaService` (disponible globalmente).
+2. `TodoModule` registra `TodoRepository` → `PrismaTodoRepository` y exporta `TodoService`.
+3. `ApiModule` importa `TodoModule` para inyectar `TodoService` en el controller.
+4. `AppModule` conecta todo: `ContextsModule` (dominio) + `AppsModule` (delivery) + `PrismaModule` (infraestructura compartida).
+
+---
+
+## Estructura final del proyecto
+
+```
+packages/backend/
+├── prisma/
+│   ├── schema.prisma                  # Esquema de modelos
+│   └── migrations/                    # Migraciones generadas
+├── src/
+│   ├── main.ts                        # Bootstrap + Swagger config
+│   ├── app.module.ts                  # Módulo raíz
+│   │
+│   ├── shared/                        # Infraestructura compartida
+│   │   └── infrastructure/
+│   │       └── prisma/
+│   │           ├── prisma.module.ts   # @Global — disponible en toda la app
+│   │           └── prisma.service.ts  # Extiende PrismaClient con driver adapter
+│   │
+│   ├── contexts/                      # Bounded contexts (dominios de negocio)
+│   │   ├── contexts.module.ts
+│   │   │
+│   │   ├── tasks/                     # Bounded context: "Tasks"
+│   │   │   ├── tasks.module.ts
+│   │   │   └── todo/                  # Aggregate root: Todo
+│   │   │       ├── todo.module.ts
+│   │   │       ├── domain/            # El corazón — sin dependencias
+│   │   │       │   ├── todo.entity.ts        # Entidad del dominio
+│   │   │       │   └── todo.repository.ts    # Interfaz del repositorio
+│   │   │       ├── application/        # Casos de uso
+│   │   │       │   ├── todo.service.ts       # Service (lógica de negocio)
+│   │   │       │   └── dto/
+│   │   │       │       ├── create-todo.dto.ts
+│   │   │       │       └── update-todo.dto.ts
+│   │   │       └── infrastructure/    # Implementación técnica
+│   │   │           └── prisma-todo.repository.ts  # Repositorio con Prisma
+│   │   │
+│   │   └── identity-access/           # Bounded context: "Auth & Users"
+│   │       ├── identity-access.module.ts
+│   │       ├── user/
+│   │       │   ├── user.module.ts
+│   │       │   ├── domain/
+│   │       │   │   ├── user.entity.ts
+│   │       │   │   └── user.repository.ts
+│   │       │   ├── application/
+│   │       │   │   ├── user.service.ts
+│   │       │   │   └── dto/create-user.dto.ts
+│   │       │   └── infrastructure/
+│   │       │       └── prisma-user.repository.ts
+│   │       └── auth/
+│   │           ├── auth.module.ts
+│   │           ├── application/
+│   │           │   ├── auth.service.ts
+│   │           │   └── dto/login.dto.ts
+│   │           └── infrastructure/
+│   │               ├── jwt.strategy.ts
+│   │               ├── jwt-auth.guard.ts
+│   │               └── current-user.decorator.ts
+│   │
+│   └── apps/                          # Capa de delivery
+│       ├── apps.module.ts
+│       └── api/
+│           ├── api.module.ts
+│           ├── auth.controller.ts
+│           ├── user.controller.ts
+│           ├── todo.controller.ts
+│           └── *.spec.ts
+│
+├── src/__mocks__/                     # Mocks para Jest (ESM packages)
+│   ├── @nestjs/jwt.js
+│   ├── @nestjs/passport.js
+│   ├── argon2.js
+│   └── passport-jwt.js
+│
+├── generated/                         # Client Prisma (no commitear)
+├── prisma7.config.ts
+├── .env
+└── package.json
+```
+
+---
+
+## Autenticación y Seguridad de APIs
+
+### Dependencias instaladas
 
 ```bash
-# development
-$ pnpm run start
-
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
+pnpm add @nestjs/jwt @nestjs/passport passport passport-jwt argon2 @nestjs/config
 ```
 
-## Run tests
+| Paquete | Propósito |
+|---------|-----------|
+| `@nestjs/jwt` | Integración de JWT con NestJS (firma y verificación de tokens) |
+| `@nestjs/passport` | Integración de Passport con NestJS (strategy pattern) |
+| `passport` | Framework de autenticación modular |
+| `passport-jwt` | Strategy para extraer y verificar tokens JWT del header |
+| `argon2` | Hashing de contraseñas (ganador del Password Hashing Competition) |
+| `@nestjs/config` | Carga variables de entorno desde `.env` vía `ConfigService` |
+
+### Bounded Context: Identity Access
+
+El sistema de autenticación vive en `src/contexts/identity-access/`, siguiendo los mismos principios DDD del resto del proyecto:
+
+```
+src/contexts/identity-access/
+├── identity-access.module.ts      # Agrupa User + Auth
+├── user/                          # Gestión de usuarios
+│   ├── domain/
+│   │   ├── user.entity.ts         # Entidad del dominio
+│   │   └── user.repository.ts     # Interfaz del repositorio
+│   ├── application/
+│   │   ├── user.service.ts        # Lógica de negocio (crear, listar)
+│   │   └── dto/create-user.dto.ts # Validación de entrada
+│   ├── infrastructure/
+│   │   └── prisma-user.repository.ts  # Implementación con Prisma
+│   └── user.module.ts             # Módulo (exporta UserService + UserRepository)
+└── auth/                          # Autenticación y autorización
+    ├── application/
+    │   ├── auth.service.ts         # Lógica de login
+    │   └── dto/login.dto.ts        # Validación de credenciales
+    └── infrastructure/
+        ├── jwt.strategy.ts         # Estrategia Passport JWT
+        ├── jwt-auth.guard.ts       # Guard para proteger endpoints
+        └── current-user.decorator.ts  # Decorador para obtener el usuario autenticado
+```
+
+### Modelo de Usuario (Prisma Schema)
+
+```prisma
+enum Role {
+  CLIENT
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+}
+
+model User {
+  id       String     @id @default(uuid())
+  email    String     @unique
+  name     String?
+  password String     // Hash Argon2id
+  role     Role       @default(CLIENT)
+  status   UserStatus @default(ACTIVE)
+  todos    Todo[]
+}
+```
+
+**Roles:**
+- `CLIENT`: Usuario estándar, solo gestiona sus propios recursos
+- `ADMIN`: Acceso administrativo (preparado para futuros endpoints)
+
+**Estados:**
+- `ACTIVE`: Puede autenticarse
+- `BLOCKED`: No puede autenticarse
+
+### Flujo de Autenticación
+
+#### 1. Registro de Usuario
+
+```typescript
+// POST /users
+// Body: { email, name, password }
+```
+
+- Valida datos de entrada con DTO (`CreateUserDto`)
+- Hashea la contraseña con **Argon2id** (memory: 19456, timeCost: 2, parallelism: 1)
+- Crea usuario con rol `CLIENT` y estado `ACTIVE`
+- Retorna usuario sin contraseña
+
+#### 2. Login
+
+```typescript
+// POST /auth/login
+// Body: { email, password }
+```
+
+- Busca usuario por email
+- Verifica contraseña con `argon2.verify()`
+- Genera JWT con payload: `{ sub: id, email, role }`
+- Retorna `{ accessToken, user }`
+
+#### 3. Acceso a Endpoints Protegidos
+
+```typescript
+// GET /todo
+// Header: Authorization: Bearer <token>
+```
+
+### Componentes de Seguridad
+
+#### JWT Strategy (`jwt.strategy.ts`)
+
+```typescript
+@Injectable()
+export class JwtStrategy extends PassportStrategy(Strategy) {
+  constructor(
+    private readonly userRepository: UserRepository,
+    private readonly config: ConfigService,
+  ) {
+    super({
+      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      ignoreExpiration: false,
+      secretOrKey: config.get<string>('JWT_SECRET'),  // ← ConfigService, NO process.env
+    });
+  }
+
+  async validate(payload: JwtPayload) {
+    const user = await this.userRepository.findById(payload.sub);
+    if (!user) throw new UnauthorizedException('User not found');
+    return { id: user.id, email: user.email, role: user.role };
+  }
+}
+```
+
+**Por qué `ConfigService` y no `process.env`:**
+NestJS carga las variables de entorno de forma asíncrona. Si lees `process.env.JWT_SECRET` directamente, puede llegar `undefined` antes de que `ConfigModule` termine de cargar el `.env`. Esto genera un mismatch entre el secret usado para firmar y el usado para validar → siempre 401.
+
+#### JWT Auth Guard (`jwt-auth.guard.ts`)
+
+```typescript
+@Injectable()
+export class JwtAuthGuard extends AuthGuard('jwt') {
+  canActivate(context: ExecutionContext) {
+    return super.canActivate(context);
+  }
+}
+```
+
+**Uso en controllers:**
+
+```typescript
+@UseGuards(JwtAuthGuard)
+@Get('protected')
+getProtectedResource(@CurrentUser() user: User) {
+  return { message: `Hola ${user.email}` };
+}
+```
+
+#### Current User Decorator (`current-user.decorator.ts`)
+
+```typescript
+export const CurrentUser = createParamDecorator(
+  (data: unknown, ctx: ExecutionContext) => {
+    const request = ctx.switchToHttp().getRequest();
+    return request.user;
+  },
+);
+```
+
+**Uso:** Extrae el usuario validado del request (inyectado por Passport después del `validate()` de JwtStrategy).
+
+### Configuración de Variables de Entorno
+
+```env
+# .env
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/todo?schema=public"
+JWT_SECRET=your_jwt_secret_key    # ← Clave secreta para JWT
+PORT=3050
+```
+
+**Importante:**
+- `JWT_SECRET` se carga vía `ConfigModule` (configurado en `app.module.ts`)
+- Nunca uses el mismo secret en desarrollo y producción
+- El fallback `'default_secret'` es solo para desarrollo (nunca en producción)
+
+### Módulos y Dependencias
+
+```typescript
+// auth.module.ts
+@Module({
+  imports: [
+    UserModule,                                           // Para UserRepository
+    PassportModule.register({ defaultStrategy: 'jwt' }),  // Passport JWT
+    JwtModule.registerAsync({                             // JWT con ConfigService
+      imports: [ConfigModule],
+      useFactory: (config: ConfigService) => ({
+        secret: config.get<string>('JWT_SECRET'),
+        signOptions: { expiresIn: '1h' },
+      }),
+      inject: [ConfigService],
+    }),
+  ],
+  providers: [AuthService, JwtStrategy],
+  exports: [AuthService],
+})
+export class AuthModule {}
+```
+
+**Flujo de resolución de dependencias:**
+1. `UserModule` provee `UserRepository` (abstracción) → `PrismaUserRepository` (implementación)
+2. `UserModule` **exporta** `UserRepository` → `AuthModule` puede resolverlo
+3. `AuthModule` inyecta `UserRepository` en `AuthService` y `JwtStrategy`
+4. `ConfigModule` (global) provee `ConfigService` → `AuthModule` accede a `JWT_SECRET`
+
+### Hashing de Contraseñas con Argon2id
+
+```typescript
+// Crear usuario
+const hashedPassword = await argon2.hash(dto.password, {
+  type: argon2.argon2id,    // Combina Argon2d + Argon2i
+  memoryCost: 19456,        // 19 MB de memoria
+  timeCost: 2,              // 2 iteraciones
+  parallelism: 1,           // 1 thread
+});
+
+// Verificar contraseña
+const valid = await argon2.verify(user.password, dto.password);
+```
+
+**Por qué Argon2id:**
+- Ganador del Password Hashing Competition (2015)
+- Resistente a ataques de GPU/ASIC
+- Combina las ventajas de Argon2d (resistencia a ataques de tiempo) y Argon2i (resistencia a ataques de memoria)
+
+### Resumen de Seguridad
+
+| Capa | Tecnología | Propósito |
+|------|------------|-----------|
+| Contraseñas | Argon2id | Hash unidireccional, nunca se almacena texto plano |
+| Autenticación | JWT (HS256) | Tokens stateless, verificables sin DB |
+| Autorización | Guards + Decorators | Control de acceso por endpoint |
+| Validación | DTOs + ValidationPipe | Filtra entradas maliciosas antes de llegar al dominio |
+| Configuración | ConfigService | Variables de entorno seguras, sin hardcoding |
+
+---
+
+## API Endpoints
+
+### Auth
+
+| Método | Ruta | Autenticado | Descripción |
+|--------|------|-------------|-------------|
+| POST | `/auth/login` | No | Iniciar sesión, retorna JWT |
+
+### Users
+
+| Método | Ruta | Autenticado | Descripción |
+|--------|------|-------------|-------------|
+| GET | `/users` | Sí | Listar todos los usuarios |
+| POST | `/users` | Sí | Crear usuario |
+
+### Todo
+
+| Método | Ruta | Autenticado | Descripción |
+|--------|------|-------------|-------------|
+| GET | `/todo` | Sí | Listar tareas del usuario |
+| GET | `/todo/:id` | Sí | Obtener tarea por ID |
+| POST | `/todo` | Sí | Crear tarea |
+| PATCH | `/todo/:id` | Sí | Actualizar tarea (parcial) |
+| DELETE | `/todo/:id` | Sí | Eliminar tarea |
+
+### PATCH /todo/:id — Update Parcial
+
+El endpoint de actualización acepta **cualquier combinación** de campos:
+
+```json
+// Solo actualizar completed
+{ "completed": true }
+
+// Solo actualizar título
+{ "title": "Nuevo título" }
+
+// Actualizar varios campos
+{ "title": "Nuevo título", "description": "Nueva descripción", "completed": true }
+```
+
+---
+
+## Swagger
+
+### Dependencias instaladas
 
 ```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
+pnpm add @nestjs/swagger
 ```
 
-## Deployment
+| Paquete | Propósito |
+|---------|-----------|
+| `@nestjs/swagger` | Decoradores para documentar endpoints, DTOs y respuestas |
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+### Configuración en `main.ts`
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+```typescript
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+
+const config = new DocumentBuilder()
+  .setTitle('Todo API')
+  .setDescription('API para manejar tareas de un usuario')
+  .setVersion('1.0')
+  .addBearerAuth(
+    {
+      type: 'http',
+      scheme: 'bearer',
+      bearerFormat: 'JWT',
+      name: 'Authorization',
+      in: 'header',
+    },
+    'jwt',  // ← name del scheme, se usa en @ApiBearerAuth('jwt')
+  )
+  .build();
+
+const document = SwaggerModule.createDocument(app, config);
+SwaggerModule.setup('docs', app, document);
+```
+
+### Decoradores Swagger en Controllers
+
+```typescript
+@ApiTags('Todo')           // Agrupa endpoints en Swagger UI
+@ApiBearerAuth('jwt')      // Requiere token JWT para todos los endpoints del controller
+@UseGuards(JwtAuthGuard)
+@Controller('todo')
+export class TodoController {
+
+  @Get()
+  @ApiOperation({ summary: 'Obtener todas las tareas' })
+  @ApiResponse({ status: 200, description: 'Lista de tareas' })
+  findAll() { ... }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Obtener una tarea por ID' })
+  @ApiParam({ name: 'id', description: 'ID de la tarea' })
+  @ApiResponse({ status: 200, description: 'Tarea encontrada' })
+  @ApiResponse({ status: 404, description: 'Tarea no encontrada' })
+  findOne(@Param('id') id: string) { ... }
+
+  @Patch(':id')
+  @ApiOperation({ summary: 'Actualizar parcialmente una tarea' })
+  @ApiParam({ name: 'id', description: 'ID de la tarea' })
+  @ApiResponse({ status: 200, description: 'Tarea actualizada' })
+  update(@Param('id') id: string, @Body() dto: UpdateTodoDto) { ... }
+}
+```
+
+### Decoradores Swagger en DTOs
+
+```typescript
+export class CreateTodoDto {
+  @ApiProperty({
+    description: 'Título de la tarea',
+    example: 'Comprar pan',
+  })
+  @IsString()
+  @IsNotEmpty()
+  title: string;
+
+  @ApiPropertyOptional({    // ← Para campos opcionales
+    description: 'Descripción de la tarea',
+    example: 'Comprar pan en la tienda cercana',
+  })
+  @IsString()
+  @IsOptional()
+  description?: string;
+}
+```
+
+### Uso
+
+1. Abrir http://localhost:4000/docs
+2. Click en **"Authorize"** (botón superior derecho)
+3. Pegar tu token JWT (sin prefijo "Bearer")
+4. Click **"Authorize"**
+5. Todos los requests incluirán el token automáticamente
+
+---
+
+## Árbol de Módulos
+
+```
+AppModule
+├── ConfigModule (@Global)
+├── PrismaModule (@Global)
+├── ContextsModule
+│   ├── TasksModule
+│   │   └── TodoModule
+│   └── IdentityAccessModule
+│       ├── UserModule
+│       └── AuthModule
+└── AppsModule
+    └── ApiModule
+        ├── AuthController
+        ├── UserController
+        └── TodoController
+```
+
+**Flujo de inyección:**
+1. `PrismaModule` exporta `PrismaService` (disponible globalmente).
+2. `TodoModule` registra `TodoRepository` → `PrismaTodoRepository` y exporta `TodoService`.
+3. `UserModule` registra `UserRepository` → `PrismaUserRepository` y exporta `UserService` + `UserRepository`.
+4. `AuthModule` importa `UserModule` para inyectar `UserRepository` en `AuthService` y `JwtStrategy`.
+5. `ApiModule` importa los módulos necesarios para inyectar services en controllers.
+6. `AppModule` conecta todo: `ContextsModule` (dominio) + `AppsModule` (delivery) + `PrismaModule` (infraestructura compartida).
+
+---
+
+## Tests
 
 ```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
+pnpm test           # 31 tests, 7 suites
+pnpm test:cov       # coverage
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+### Suites de Test
 
-## Observability
+| Suite | Tests | Qué cubre |
+|-------|-------|-----------|
+| `TodoController` | 5 | CRUD completo |
+| `TodoService` | 6 | Lógica de negocio + NotFoundException |
+| `AuthService` | 3 | Login, user not found, wrong password |
+| `AuthController` | 2 | Login endpoint |
+| `UserController` | 3 | findAll, create |
+| `JwtStrategy` | 2 | validate, user not found |
+| `UserService` | 4 | findAll, create, duplicate email |
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
+### Mocks ESM
 
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
+Los paquetes `@nestjs/jwt`, `@nestjs/passport`, `passport-jwt` y `argon2` son ESM puro. Jest (CommonJS) no los parsea. Se resuelven con `moduleNameMapper` en `package.json` apuntando a mocks manuales en `src/__mocks__/`.
 
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
+---
 
-## Resources
+## Prisma Commands
 
-Check out a few resources that may come in handy when working with NestJS:
+```bash
+npx prisma generate                    # Generar client después de cambiar schema.prisma
+npx prisma migrate dev --name nombre   # Crear migración (desarrollo)
+npx prisma migrate deploy              # Aplicar migraciones en producción
+npx prisma studio                      # Ver y modificar la DB en el navegador
+npx prisma migrate reset               # Resetear la DB (borra datos + recrea)
+npx prisma format                      # Formatear schema.prisma
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observer](https://observer.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+## Ejecutar el proyecto
 
-## Support
+```bash
+pnpm run start:dev                     # Desarrollo (hot-reload)
+pnpm run build && pnpm run start:prod  # Build + producción
+```
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+## Notas
 
-## Stay in touch
+- `generated/` y `.env` están en `.gitignore` — no se commitean.
+- Prisma 7 usa `prisma7.config.ts` para configuración.
+- El client se importa desde `generated/prisma/client` (no desde `@prisma/client`).
+- `prisma generate` corre después de cada `pnpm install` gracias al script `postinstall`.
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+## Recursos
 
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- [NestJS Docs](https://docs.nestjs.com)
+- [Prisma Docs](https://www.prisma.io/docs)
+- [Domain-Driven Design — Eric Evans](https://www.domainlanguage.com/ddd/)
